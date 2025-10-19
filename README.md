@@ -28,12 +28,16 @@
 2. 搜索 "easy-dwgo" 或直接访问插件 URL
 3. 点击 **Install** 按钮进行安装
 
+**插件安装地址**：https://raw.githubusercontent.com/wlaosj/easy-dwgo/refs/heads/main/easy-dwgo.plg
+
 ### 方法二：手动安装
 
 1. 下载 `easy-dwgo.plg` 文件
 2. 将文件放置到 `/boot/config/plugins/` 目录
 3. 在 Unraid Web 界面中进入 **Plugins** 页面
 4. 找到 easy-dwgo 插件并点击 **Install**
+
+**直接下载链接**：https://raw.githubusercontent.com/wlaosj/easy-dwgo/refs/heads/main/easy-dwgo.plg
 
 ## 📖 使用指南
 
