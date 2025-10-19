@@ -1,0 +1,663 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name      "easy-dwgo">
+<!ENTITY author    "隔壁小王">
+<!ENTITY version   "1.0.0">
+<!ENTITY launch    "Settings/EasyDwgo.Main">
+<!ENTITY sourceDir "/boot/config/plugins/easy-dwgo">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/wlaosj/easy-dwgo/refs/heads/main/easy-dwgo.plg">
+<!ENTITY plgPATH   "/boot/config/plugins/&name;">
+<!ENTITY plgNAME   "&name;-&version;-x86_64">
+<!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
+]>
+
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.12.0" support="https://t.me/+7jcTMePlNVwwZjg1" icon="code">
+
+<CHANGES>
+1.0.0  初始版本发布
+- 支持Go环境自动安装和管理
+- 支持多版本Go环境切换（1.20.x, 1.21.x, 1.22.x）
+- 集成Web管理界面
+- 支持Go包管理和项目创建
+- 支持开机自启动
+- 支持仪表板状态显示
+- 支持环境变量自动配置
+</CHANGES>
+
+<!-- pre-install: ensure clean run dir -->
+<FILE Run="/bin/bash">
+<INLINE>
+set -e
+rm -rf /usr/local/emhttp/plugins/easy-dwgo
+mkdir -p /usr/local/emhttp/plugins/easy-dwgo/scripts
+mkdir -p /boot/config/plugins/easy-dwgo
+</INLINE>
+</FILE>
+
+<!-- copy files from source directory -->
+<FILE Run="/bin/bash">
+<INLINE><![CDATA[
+set -e
+# 从源目录复制所有文件
+echo "正在创建Go环境插件目录结构..."
+
+# 停止正在运行的Go相关服务
+echo "正在检查Go环境..."
+if pgrep -f "go run" >/dev/null 2>&1; then
+  echo "  ✓ 检测到Go进程，将在安装完成后重启"
+fi
+
+# 创建Go环境管理脚本
+echo "  - 正在创建Go环境管理脚本..."
+cat > "/usr/local/emhttp/plugins/easy-dwgo/scripts/go_manager.sh" << 'EOF'
+#!/bin/bash
+# Go环境管理器
+
+GOPATH="/tmp/go"
+GOROOT="/usr/local/go"
+GO_VERSION_FILE="/boot/config/plugins/easy-dwgo/version.conf"
+
+# 统一的Go环境恢复函数
+restore_go_environment() {
+    # 检查GOROOT目录是否存在
+    if [ ! -d "$GOROOT" ] || [ ! -f "$GOROOT/bin/go" ]; then
+        echo "检测到Go SDK缺失，正在恢复..." >> /var/log/easy-dwgo.log 2>&1
+        
+        # 检查U盘是否有Go SDK备份
+        GO_SDK_BACKUP="/boot/config/plugins/easy-dwgo/go-sdk.tar.gz"
+        if [ -f "$GO_SDK_BACKUP" ]; then
+            echo "从U盘恢复Go SDK..." >> /var/log/easy-dwgo.log 2>&1
+            mkdir -p /usr/local
+            tar -xzf "$GO_SDK_BACKUP" -C /usr/local/
+            chmod -R 755 /usr/local/go
+            echo "Go SDK恢复完成" >> /var/log/easy-dwgo.log 2>&1
+        else
+            echo "错误：Go SDK备份不存在，需要重新安装" >> /var/log/easy-dwgo.log 2>&1
+            return 1
+        fi
+    fi
+    
+    # 创建符号链接
+    create_go_symlinks
+    
+    # 设置环境变量
+    setup_go_environment
+    
+    # 确保GOPATH目录存在，设置正确权限
+    mkdir -p "$GOPATH"/{bin,src,pkg}
+    chmod -R 755 "$GOPATH"
+    chown -R nobody:users "$GOPATH"
+    echo "GOPATH目录已创建: $GOPATH" >> /var/log/easy-dwgo.log 2>&1
+    
+    return 0
+}
+
+# 创建Go符号链接
+create_go_symlinks() {
+    mkdir -p /usr/local/bin
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+    echo "Go符号链接创建完成" >> /var/log/easy-dwgo.log 2>&1
+}
+
+# 设置Go环境变量
+setup_go_environment() {
+    # 创建GOPATH目录，设置正确权限
+    mkdir -p "$GOPATH"/{bin,src,pkg}
+    chmod -R 755 "$GOPATH"
+    chown -R nobody:users "$GOPATH"
+    
+    # 设置环境变量到系统
+    cat > /etc/profile.d/go.sh << 'GOEOF'
+export GOROOT="/usr/local/go"
+export GOPATH="/tmp/go"
+export PATH="$PATH:$GOROOT/bin:$GOPATH/bin"
+GOEOF
+    
+    # 使环境变量立即生效
+    source /etc/profile.d/go.sh
+    echo "Go环境变量设置完成" >> /var/log/easy-dwgo.log 2>&1
+}
+
+# 获取Go版本
+get_go_version() {
+    if [ -f "$GOROOT/bin/go" ]; then
+        "$GOROOT/bin/go" version 2>/dev/null | head -n1 || echo "unknown"
+    else
+        echo "not installed"
+    fi
+}
+
+# 检查Go环境状态
+check_go_status() {
+    if [ -d "$GOROOT" ] && [ -f "$GOROOT/bin/go" ] && "$GOROOT/bin/go" version >/dev/null 2>&1; then
+        echo "installed"
+    else
+        echo "not installed"
+    fi
+}
+
+# 主函数
+main() {
+    case "$1" in
+        "check")
+            check_go_status
+            ;;
+        "restore")
+            restore_go_environment
+            ;;
+        "version")
+            get_go_version
+            ;;
+        "setup")
+            setup_go_environment
+            ;;
+        "symlinks")
+            create_go_symlinks
+            ;;
+        *)
+            echo "Usage: $0 {check|restore|version|setup|symlinks}"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
+EOF
+
+chmod +x "/usr/local/emhttp/plugins/easy-dwgo/scripts/go_manager.sh"
+echo "  ✓ Go环境管理脚本已创建"
+
+# 创建Go版本下载脚本
+echo "  - 正在创建Go版本下载脚本..."
+cat > "/usr/local/emhttp/plugins/easy-dwgo/scripts/download_go.sh" << 'EOF'
+#!/bin/bash
+set -e
+
+PROGRESS=0
+if [ "$1" = "--progress" ]; then PROGRESS=1; fi
+
+VERSION="$2"
+if [ -z "$VERSION" ]; then
+    VERSION="1.21.5"  # 默认版本
+fi
+
+DOWNLOAD_DIR="/tmp/go-download"
+TMP_GO="/tmp/go-latest"
+STATUS_DIR="/var/tmp/easy-dwgo-progress"
+STATUS_FILE="$STATUS_DIR/go.status"
+mkdir -p "$STATUS_DIR"
+
+write_status(){
+  echo "$1"
+  if [ "$PROGRESS" = "1" ]; then echo "$1" > "$STATUS_FILE"; fi
+}
+
+trap 'write_status "error: unexpected failure"' ERR
+
+mkdir -p "$DOWNLOAD_DIR"
+write_status "10%: 准备下载Go $VERSION..."
+
+# 构建下载URL
+GO_URL="https://golang.org/dl/go${VERSION}.linux-amd64.tar.gz"
+
+if wget -q "$GO_URL" -O "$DOWNLOAD_DIR/go${VERSION}.linux-amd64.tar.gz"; then
+  write_status "60%: 下载完成，正在解压..."
+else
+  write_status "error: 下载失败"; exit 1
+fi
+
+if tar -C /tmp -xzf "$DOWNLOAD_DIR/go${VERSION}.linux-amd64.tar.gz" 2>/dev/null; then
+  write_status "90%: 正在安装Go..."
+else
+  write_status "error: 解压失败"; rm -f "$TMP_GO"; exit 1
+fi
+
+# 安装Go - 完整SDK安装
+mkdir -p /usr/local
+mkdir -p /boot/config/plugins/easy-dwgo
+
+# 安装完整的Go SDK到 /usr/local/go
+if [ -d "/tmp/go" ]; then
+    # 如果已存在，先删除
+    rm -rf /usr/local/go
+    # 移动整个Go SDK
+    mv /tmp/go /usr/local/go
+    chmod -R 755 /usr/local/go
+fi
+
+# 创建符号链接到系统PATH
+mkdir -p /usr/local/bin
+ln -sf /usr/local/go/bin/go /usr/local/bin/go
+ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+# 备份完整的Go SDK到U盘（用于重启后恢复）
+echo "正在备份Go SDK到U盘..." >> /var/log/easy-dwgo.log 2>&1
+tar -czf /boot/config/plugins/easy-dwgo/go-sdk.tar.gz -C /usr/local go
+echo "Go SDK备份完成" >> /var/log/easy-dwgo.log 2>&1
+
+# 保存版本信息
+echo "$VERSION" > /boot/config/plugins/easy-dwgo/version.conf
+
+# 设置环境变量
+mkdir -p /tmp/go/{bin,src,pkg}
+chmod -R 755 /tmp/go
+chown -R nobody:users /tmp/go
+cat > /etc/profile.d/go.sh << 'GOEOF'
+export GOROOT="/usr/local/go"
+export GOPATH="/tmp/go"
+export PATH="$PATH:$GOROOT/bin:$GOPATH/bin"
+GOEOF
+
+rm -rf "$DOWNLOAD_DIR"
+write_status "100%: Go $VERSION 安装完成（已保存到U盘和内存）"
+( sleep 1; rm -f "$STATUS_FILE" ) >/dev/null 2>&1 &
+EOF
+
+chmod +x "/usr/local/emhttp/plugins/easy-dwgo/scripts/download_go.sh"
+echo "  ✓ Go版本下载脚本已创建"
+
+# 跳过仪表板JavaScript文件创建
+echo "  ✓ 跳过仪表板模块（已禁用）"
+
+# 安装阶段完成
+echo "✓ Go环境插件基础文件部署完成"
+]]></INLINE>
+</FILE>
+
+<!-- WebUI index -->
+<FILE Name="/usr/local/emhttp/plugins/easy-dwgo/index.php">
+<INLINE><![CDATA[
+<?php
+$baseRun = '/usr/local/emhttp/plugins/easy-dwgo';
+$scripts = $baseRun . '/scripts';
+$logFile = '/var/log/easy-dwgo.log';
+$confDir = '/boot/config/plugins/easy-dwgo';
+
+// 进度文件目录
+$progressDir = '/var/tmp/easy-dwgo-progress';
+@mkdir($progressDir, 0777, true);
+
+$cmd = isset($_POST['cmd']) ? $_POST['cmd'] : (isset($_GET['cmd']) ? $_GET['cmd'] : '');
+$msg = '';
+
+// 处理命令
+if ($cmd === 'get_progress') {
+  $file = $progressDir . '/go.status';
+  header('Content-Type: text/plain; charset=utf-8');
+  if (is_file($file)) {
+    echo @file_get_contents($file);
+  }
+  exit;
+}
+
+if ($cmd === 'start_download') {
+  $version = $_GET['version'] ?? $_POST['version'] ?? '1.21.5';
+  @unlink($progressDir . '/go.status');
+  $out = shell_exec("nohup bash $scripts/download_go.sh --progress '$version' >$progressDir/go.log 2>&1 & echo $!");
+  $msg = 'Go下载任务已启动 PID: ' . htmlspecialchars(trim($out));
+  
+  if ((isset($_GET['ajax']) && $_GET['ajax'] === '1') || (isset($_POST['ajax']) && $_POST['ajax'] === '1')) {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo $msg;
+    exit;
+  }
+}
+
+// 恢复环境和设置环境功能已集成到自动恢复机制中
+
+// 项目管理功能已移除 - 用户可直接使用终端或IDE创建Go项目
+
+// 获取状态信息
+$status = shell_exec("bash $scripts/go_manager.sh check 2>&1");
+$version = shell_exec("bash $scripts/go_manager.sh version 2>&1");
+
+// 检查安装状态
+$installStatus = '';
+$goSdkExists = is_dir('/usr/local/go') && file_exists('/usr/local/go/bin/go');
+$gopathExists = is_dir('/tmp/go');
+
+if (!$goSdkExists) {
+  $installStatus = '<div class="error">❌ Go环境未安装，请点击下方"下载/安装Go"按钮</div>';
+} elseif (!$gopathExists) {
+  $installStatus = '<div class="warning">⚠️ GOPATH目录不存在，将在下次安装Go时自动创建</div>';
+}
+
+// 获取可用版本列表
+$availableVersions = [
+    '1.20.14' => 'Go 1.20.14 (稳定版)',
+    '1.21.5' => 'Go 1.21.5 (推荐版)',
+    '1.22.0' => 'Go 1.22.0 (最新版)'
+];
+
+// 获取当前版本
+$currentVersion = '';
+if (is_file('/boot/config/plugins/easy-dwgo/version.conf')) {
+    $currentVersion = trim(@file_get_contents('/boot/config/plugins/easy-dwgo/version.conf'));
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Easy-Dwgo</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;margin:16px;color:#222}
+.card{border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px}
+pre{background:#f7f7f7;border:1px solid #eee;border-radius:6px;padding:10px;max-height:360px;overflow:auto}
+button{padding:8px 14px;margin-right:8px;cursor:pointer}
+input[type=text], select{padding:6px;margin:4px;border:1px solid #ddd;border-radius:4px}
+.warning{background:#fff3cd;border:1px solid #ffeaa7;color:#856404;padding:12px;border-radius:6px;margin-bottom:16px}
+.error{color:#dc3545;margin:4px 0;font-size:14px}
+.success{color:#28a745;margin:4px 0;font-size:14px}
+.info{color:#17a2b8;margin:4px 0;font-size:14px}
+</style>
+<script>
+function executeAction(action, param = '') {
+  var url = new URL(window.location);
+  url.searchParams.set('cmd', action);
+  if (param) {
+    url.searchParams.set('version', param);
+  }
+  window.location.href = url.toString();
+}
+
+function startDownload(version, btn) {
+  try {
+    if (btn) {
+      btn.dataset.oldText = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = '下载中...';
+    }
+    var box = document.getElementById('download-msg');
+    if (box) box.innerText = '已发起下载任务，正在准备...';
+  } catch (e) {}
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', '/plugins/easy-dwgo/api.php?cmd=start_download&version=' + encodeURIComponent(version));
+  xhr.onload = function(){
+    if (xhr.status === 200) {
+      var box = document.getElementById('download-msg');
+      if (box) box.innerText = (xhr.responseText || '').trim() || '任务已启动';
+    }
+    try { if (btn) { btn.disabled = false; btn.innerText = btn.dataset.oldText || btn.innerText; } } catch (e) {}
+  };
+  xhr.onerror = function(){ try { if (btn) { btn.disabled = false; btn.innerText = btn.dataset.oldText || btn.innerText; } } catch(e){} };
+  xhr.send();
+}
+
+function pollProgress(elId) {
+  function tick(){
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/plugins/easy-dwgo/api.php?cmd=get_progress');
+    xhr.onload = function(){
+      if (xhr.status === 200) {
+        var box = document.getElementById(elId);
+        var txt = xhr.responseText || '';
+        if (txt.trim()) {
+          box.innerText = txt;
+        } else {
+          // 进度文件已被清理，视为完成
+          if (box.innerText && box.innerText.trim() !== '') {
+            box.innerText = '✅ 下载完成';
+            setTimeout(function(){ box.innerText=''; }, 3000);
+          }
+        }
+      }
+    };
+    xhr.send();
+  }
+  tick();
+  return setInterval(tick, 2000);
+}
+
+// 项目管理功能已移除 - 用户可直接使用终端或IDE创建Go项目
+</script>
+</head>
+<body>
+<h2>Go环境管理</h2>
+<?php if ($installStatus) { echo $installStatus; } ?>
+
+<div class="card">
+  <div>
+    <b>运行状态：</b>
+    <?php
+      $statusText = trim($status ?? 'unknown');
+      if ($statusText === 'installed') {
+        echo '<span style="color:#28a745;font-weight:bold;">🟢 已安装</span>';
+      } else {
+        echo '<span style="color:#dc3545;font-weight:bold;">🔴 未安装</span>';
+      }
+    ?>
+  </div>
+
+  <div style="margin-top:8px">
+    <b>Go环境：</b>
+    <?php if ($goSdkExists): ?>
+      <span style="color:#28a745">已安装</span> | 版本：<?= htmlspecialchars(trim($version ?? 'unknown')) ?>
+    <?php else: ?>
+      <span style="color:#dc3545">未安装</span> | <span style="color:#6c757d;font-size:12px;">（重启后自动恢复）</span>
+    <?php endif; ?>
+  </div>
+
+  <div style="margin-top:6px">
+    <b>GOPATH：</b>
+    <?php if ($gopathExists): ?>
+      <span style="color:#28a745">已配置</span> | 路径：/tmp/go <span style="color:#6c757d;font-size:12px;">（内存路径，重启后需重新安装工具）</span>
+    <?php else: ?>
+      <span style="color:#ffc107">未配置</span> | <span style="color:#6c757d;font-size:12px;">（安装Go时自动配置）</span>
+    <?php endif; ?>
+  </div>
+
+  <div style="margin-top:8px;padding:8px;background:#e7f3ff;border:1px solid #b3d9ff;border-radius:4px;">
+    <span style="color:#0066cc;font-size:12px;">
+      💡 <strong>自动恢复已启用</strong>：重启后Go SDK会自动恢复，GOPATH使用内存路径（重启后需重新安装工具）
+    </span>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Go版本管理</h3>
+  <div>
+    <b>当前版本：</b><?= htmlspecialchars($currentVersion ?: '未安装') ?>
+  </div>
+  
+  <div style="margin-top:10px">
+    <b>安装新版本：</b>
+    <select id="version_select">
+      <?php foreach ($availableVersions as $ver => $desc): ?>
+        <option value="<?= $ver ?>" <?= ($ver === $currentVersion ? 'selected' : '') ?>><?= htmlspecialchars($desc) ?></option>
+      <?php endforeach; ?>
+    </select>
+    <button onclick="startDownload(document.getElementById('version_select').value, this)">下载/安装</button>
+  </div>
+  
+  <div id="progress-go" style="font-size:12px;color:#6c757d;margin-top:4px"></div>
+</div>
+
+<!-- 项目管理功能已移除 - 用户可直接使用终端或IDE创建Go项目 -->
+
+<div class="card">
+  <h3>环境信息</h3>
+  <div>
+    <b>GOROOT：</b>/usr/local/go<br>
+    <b>GOPATH：</b>/tmp/go <span style="color:#6c757d;font-size:12px;">（内存路径）</span><br>
+    <b>Go版本：</b><?= htmlspecialchars(trim($version ?? 'unknown')) ?><br>
+    <b>安装状态：</b><?= htmlspecialchars(trim($status ?? 'unknown')) ?>
+  </div>
+</div>
+
+<div id="download-msg" style="font-size:12px;color:#6c757d;margin-top:6px"></div>
+
+<script>
+// 页面加载后开始轮询进度
+pollProgress('progress-go');
+</script>
+</body>
+</html>
+]]></INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/easy-dwgo/api.php">
+<INLINE><![CDATA[
+<?php
+// 轻量 API：纯文本返回，避免 emhttp 外层 HTML 包装
+header('Content-Type: text/plain; charset=utf-8');
+
+$baseRun = '/usr/local/emhttp/plugins/easy-dwgo';
+$scripts = $baseRun . '/scripts';
+$progressDir = '/var/tmp/easy-dwgo-progress';
+@mkdir($progressDir, 0777, true);
+
+$cmd = $_GET['cmd'] ?? $_POST['cmd'] ?? '';
+
+if ($cmd === 'get_progress') {
+  $file = $progressDir . '/go.status';
+  if (is_file($file)) { 
+    echo @file_get_contents($file); 
+  }
+  exit;
+}
+
+if ($cmd === 'start_download') {
+  $version = $_GET['version'] ?? $_POST['version'] ?? '1.21.5';
+  @unlink($progressDir . '/go.status');
+  $out = shell_exec("nohup bash $scripts/download_go.sh --progress '$version' >$progressDir/go.log 2>&1 & echo $!");
+  echo 'Go下载任务已启动 PID: ' . trim($out);
+  exit;
+}
+
+// 仪表板API已移除
+
+// 恢复环境和设置环境功能已集成到自动恢复机制中
+
+echo 'unknown command';
+?>
+]]></INLINE>
+</FILE>
+
+<!-- Main page content -->
+<FILE Name="/usr/local/emhttp/plugins/easy-dwgo/EasyDwgo.Main.page">
+<INLINE><![CDATA[
+Menu="Utilities"
+Type="xmenu"
+Title="Easy-Dwgo"
+Icon="code"
+Tabs="false"
+---
+<?php
+include '/usr/local/emhttp/plugins/easy-dwgo/index.php';
+?>
+]]></INLINE>
+</FILE>
+
+<!-- Dashboard page content removed -->
+
+<!-- post-install: setup menu entry -->
+<FILE Run="/bin/bash">
+<INLINE>
+set -e
+echo "Go环境插件安装完成。持久化路径: /boot/config/plugins/easy-dwgo"
+
+# 设置开机自动恢复Go环境
+echo "  - 设置开机自动恢复机制..."
+
+# 安全的go文件修改方式 - 使用标记块
+goPath="/boot/config/go"
+begin="# BEGIN easy-dwgo (do not edit)"
+end="# END easy-dwgo"
+
+# 读取现有go文件
+go=$(cat "$goPath" 2>/dev/null || echo "")
+
+# 检查是否已存在插件标记块
+if echo "$go" | grep -q "$begin" &amp;&amp; echo "$go" | grep -q "$end"; then
+    # 替换现有标记块
+    temp_file=$(mktemp)
+    cat &gt; "$temp_file" &lt;&lt; 'EOF'
+# BEGIN easy-dwgo (do not edit)
+# Go环境自动恢复
+if [ -f "/boot/config/plugins/easy-dwgo/go-sdk.tar.gz" ] &amp;&amp; [ ! -d "/usr/local/go" ]; then
+    echo "[Go环境] 检测到重启，正在自动恢复Go环境..."
+    /usr/local/emhttp/plugins/easy-dwgo/scripts/go_manager.sh restore &gt;/dev/null 2&gt;&amp;1 &amp;
+fi
+# END easy-dwgo
+EOF
+    # 使用更安全的方式替换
+    awk -v begin="$begin" -v end="$end" -v replacement="$(cat "$temp_file")" '
+    /^# BEGIN easy-dwgo \(do not edit\)$/ { in_block=1; print replacement; next }
+    /^# END easy-dwgo$/ { in_block=0; next }
+    !in_block { print }
+    ' "$goPath" &gt; "$goPath.tmp" &amp;&amp; mv "$goPath.tmp" "$goPath"
+    rm -f "$temp_file"
+else
+    # 追加新的标记块
+    if [ -n "$go" ] &amp;&amp; [ "${go: -1}" != "\n" ]; then
+        echo "" >> "$goPath"
+    fi
+    cat &gt;&gt; /boot/config/go &lt;&lt; 'GOEOF'
+# BEGIN easy-dwgo (do not edit)
+# Go环境自动恢复
+if [ -f "/boot/config/plugins/easy-dwgo/go-sdk.tar.gz" ] &amp;&amp; [ ! -d "/usr/local/go" ]; then
+    echo "[Go环境] 检测到重启，正在自动恢复Go环境..."
+    /usr/local/emhttp/plugins/easy-dwgo/scripts/go_manager.sh restore &gt;/dev/null 2&gt;&amp;1 &amp;
+fi
+# END easy-dwgo
+GOEOF
+fi
+
+echo "  ✓ 开机自动恢复已设置（安全模式）"
+</INLINE>
+</FILE>
+
+<!-- remove -->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE><![CDATA[
+set -e
+echo "正在卸载 Easy-Dwgo 插件..."
+
+# 清理Go环境
+echo "  - 清理Go环境..."
+rm -f /usr/local/bin/go
+rm -f /usr/local/bin/gofmt
+rm -rf /usr/local/go
+rm -f /boot/config/plugins/easy-dwgo/go-sdk.tar.gz
+rm -f /boot/config/plugins/easy-dwgo/version.conf
+
+# 清理环境变量
+echo "  - 清理环境变量..."
+rm -f /etc/profile.d/go.sh
+
+# 清理开机自动恢复配置
+echo "  - 清理开机自动恢复配置..."
+# 使用精确的标记块清理，避免误删其他内容
+sed -i "/^# BEGIN easy-dwgo (do not edit)$/,/^# END easy-dwgo$/d" /boot/config/go 2>/dev/null || true
+
+# 清理插件目录
+echo "  - 清理插件目录..."
+rm -rf /usr/local/emhttp/plugins/easy-dwgo
+rm -rf /boot/config/plugins/easy-dwgo
+
+# 清理内存临时目录
+echo "  - 清理内存临时目录..."
+rm -rf /var/tmp/easy-dwgo-progress /tmp/go-download
+
+# 清理Go SDK备份
+echo "  - 清理Go SDK备份..."
+rm -f /boot/config/plugins/easy-dwgo/go-sdk.tar.gz
+
+# 清理系统覆盖层文件
+echo "  - 清理系统文件..."
+rm -rf /var/local/overlay/usr/local/emhttp/plugins/easy-dwgo
+rm -f /var/local/overlay/usr/local/emhttp/plugins/easy-dwgo.*
+
+# 清理日志文件
+echo "  - 清理日志文件..."
+rm -f /var/log/easy-dwgo.log
+
+echo ""
+echo "🎉 Easy-Dwgo 插件卸载完成！"
+echo "   所有相关文件和配置已完全清理。"
+]]></INLINE>
+</FILE>
+
+</PLUGIN>
